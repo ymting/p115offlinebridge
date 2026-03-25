@@ -23,6 +23,19 @@ class OfflineAddResult:
         return asdict(self)
 
 
+@dataclass
+class ShareAddResult:
+    success: bool
+    adapter: str
+    total: int
+    success_count: int
+    failed_count: int
+    message: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 class P115StrmHelperAdapter:
     """
     通过 MoviePilot 插件 API 调用 P115StrmHelper 现有离线下载能力。
@@ -142,6 +155,107 @@ class P115StrmHelperAdapter:
                 target_path=target_path,
                 message=f"调用异常：{err}",
             )
+
+    def add_share_urls(self, share_urls: List[str]) -> ShareAddResult:
+        if not share_urls:
+            return ShareAddResult(
+                success=False,
+                adapter="p115_strmhelper",
+                total=0,
+                success_count=0,
+                failed_count=0,
+                message="未提供可用分享链接",
+            )
+
+        if not self._moviepilot_url:
+            return ShareAddResult(
+                success=False,
+                adapter="p115_strmhelper",
+                total=len(share_urls),
+                success_count=0,
+                failed_count=len(share_urls),
+                message="MoviePilot 地址未配置",
+            )
+
+        if not self._api_token:
+            return ShareAddResult(
+                success=False,
+                adapter="p115_strmhelper",
+                total=len(share_urls),
+                success_count=0,
+                failed_count=len(share_urls),
+                message="MoviePilot API Token 未配置",
+            )
+
+        url = f"{self._moviepilot_url}/api/v1/plugin/P115StrmHelper/add_transfer_share"
+        success_count = 0
+        failed_count = 0
+        fail_messages: List[str] = []
+
+        for share_url in share_urls:
+            try:
+                response = RequestUtils(
+                    content_type="application/json",
+                    timeout=self._timeout,
+                ).get_res(
+                    url=url,
+                    params={"apikey": self._api_token, "share_url": share_url},
+                )
+                if not response:
+                    failed_count += 1
+                    fail_messages.append("无响应")
+                    continue
+
+                body = None
+                try:
+                    body = response.json()
+                except Exception:
+                    try:
+                        body = json.loads(response.text)
+                    except Exception:
+                        body = None
+
+                if response.status_code >= 400:
+                    failed_count += 1
+                    if isinstance(body, dict):
+                        fail_messages.append(
+                            str(body.get("msg") or body.get("message") or response.status_code)
+                        )
+                    else:
+                        fail_messages.append(str(response.status_code))
+                    continue
+
+                if isinstance(body, dict):
+                    code = int(body.get("code", 0))
+                    if code == 0:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                        fail_messages.append(str(body.get("msg") or "转存失败"))
+                else:
+                    failed_count += 1
+                    fail_messages.append("响应不是有效 JSON")
+            except Exception as err:
+                failed_count += 1
+                fail_messages.append(str(err))
+                logger.error("调用分享转存 API 异常: %s", err, exc_info=True)
+
+        total = len(share_urls)
+        ok = failed_count == 0
+        if ok:
+            message = f"分享转存任务提交成功（{success_count}/{total}）"
+        else:
+            first_fail = fail_messages[0] if fail_messages else "未知错误"
+            message = f"分享转存部分/全部失败（成功 {success_count}，失败 {failed_count}）：{first_fail}"
+
+        return ShareAddResult(
+            success=ok,
+            adapter="p115_strmhelper",
+            total=total,
+            success_count=success_count,
+            failed_count=failed_count,
+            message=message,
+        )
 
 
 class CloudDriveGrpcAdapter:

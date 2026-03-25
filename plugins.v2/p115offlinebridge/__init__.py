@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import random
+import re
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from app.core.config import settings
 from app.core.event import Event, eventmanager
@@ -15,6 +17,7 @@ from .adapters import (
     CloudDriveGrpcAdapter,
     OfflineAddResult,
     P115StrmHelperAdapter,
+    ShareAddResult,
 )
 from .schemas import OfflineSubmitPayload, OfflineSubmitResult
 from .version import VERSION
@@ -49,6 +52,12 @@ class P115OfflineBridge(_PluginBase):
     _p115_target_paths = ""
     _auto_recognize_enabled = True
     _auto_recognize_allow_http_torrent = True
+    _auto_recognize_share_enabled = True
+
+    _u115_share_url_pattern = re.compile(
+        r"^https?://(.*\.)?115[^/]*\.[a-zA-Z]{2,}(?:/|$)", re.IGNORECASE
+    )
+    _share_code_pattern = re.compile(r"([a-zA-Z0-9]{4})")
 
     _cd2_host = "localhost"
     _cd2_port = 19798
@@ -89,6 +98,9 @@ class P115OfflineBridge(_PluginBase):
         self._auto_recognize_enabled = bool(conf.get("auto_recognize_enabled", True))
         self._auto_recognize_allow_http_torrent = bool(
             conf.get("auto_recognize_allow_http_torrent", True)
+        )
+        self._auto_recognize_share_enabled = bool(
+            conf.get("auto_recognize_share_enabled", True)
         )
 
         self._cd2_host = str(conf.get("cd2_host") or "localhost").strip() or "localhost"
@@ -438,7 +450,20 @@ class P115OfflineBridge(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 8},
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "auto_recognize_share_enabled",
+                                            "label": "自动识别115分享链接",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VSwitch",
@@ -464,7 +489,7 @@ class P115OfflineBridge(_PluginBase):
                                             "type": "info",
                                             "variant": "tonal",
                                             "density": "compact",
-                                            "text": "命令用法：/p115_offline <磁力或下载链接>。也支持直接发送磁力链接自动识别。",
+                                            "text": "命令用法：/p115_offline <磁力或下载链接>。也支持直接发送磁力链接或115分享链接自动识别。",
                                         },
                                     }
                                 ],
@@ -484,6 +509,7 @@ class P115OfflineBridge(_PluginBase):
             "p115_path_select_mode": "fixed",
             "p115_target_paths": "",
             "auto_recognize_enabled": True,
+            "auto_recognize_share_enabled": True,
             "auto_recognize_allow_http_torrent": True,
             "cd2_host": "localhost",
             "cd2_port": 19798,
@@ -631,6 +657,110 @@ class P115OfflineBridge(_PluginBase):
             unique.append(item)
         return unique
 
+    def _is_115_share_url(self, token: str) -> bool:
+        if not token:
+            return False
+        try:
+            parsed = urlparse(token)
+            if parsed.scheme not in ("http", "https"):
+                return False
+        except Exception:
+            return False
+        return bool(self._u115_share_url_pattern.match(token))
+
+    def _extract_access_code(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        patterns = [
+            r"(?:访问码|提取码|密码|password)\s*[:：]\s*([a-zA-Z0-9]{4})",
+            r"(?:访问码|提取码|密码|password)\s*([a-zA-Z0-9]{4})",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, text, re.IGNORECASE)
+            if m:
+                return m.group(1)
+        return None
+
+    @staticmethod
+    def _normalize_115_share_url(url: str, access_code: Optional[str]) -> str:
+        parsed = urlparse(url.strip())
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        has_password = bool(query.get("password"))
+        if (not has_password) and access_code:
+            query["password"] = [access_code]
+            new_query = urlencode(query, doseq=True)
+            parsed = parsed._replace(query=new_query)
+            return urlunparse(parsed)
+        return url.strip()
+
+    def _extract_share_urls(self, text: str) -> List[str]:
+        parsed_tokens = self._parse_links(link_text=text)
+        access_code = self._extract_access_code(text)
+        result: List[str] = []
+        for token in parsed_tokens:
+            if not self._is_115_share_url(token):
+                continue
+            result.append(self._normalize_115_share_url(token, access_code))
+
+        unique: List[str] = []
+        seen = set()
+        for item in result:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
+
+    def _submit_share_links(self, share_urls: List[str]) -> ShareAddResult:
+        adapter = P115StrmHelperAdapter(
+            moviepilot_url=self._moviepilot_url,
+            api_token=self._moviepilot_api_token,
+            timeout=self._request_timeout,
+        )
+        result = adapter.add_share_urls(share_urls)
+        if result.success:
+            logger.info(
+                "【%s】分享转存提交成功: total=%s",
+                self.plugin_name,
+                result.total,
+            )
+        else:
+            logger.warning(
+                "【%s】分享转存提交失败: total=%s success=%s failed=%s message=%s",
+                self.plugin_name,
+                result.total,
+                result.success_count,
+                result.failed_count,
+                result.message,
+            )
+        return result
+
+    def _notify_share_submit(
+        self,
+        result: ShareAddResult,
+        channel: MessageChannel = None,
+        userid: Optional[str] = None,
+        force_notify: Optional[bool] = None,
+    ):
+        should_notify = self._notify if force_notify is None else bool(force_notify)
+        if not should_notify:
+            return
+        title = f"【{self.plugin_name}】分享转存{'成功' if result.success else '失败'}"
+        text = (
+            f"接口对象: {result.adapter}\n"
+            f"任务总数: {result.total}\n"
+            f"成功: {result.success_count}\n"
+            f"失败: {result.failed_count}\n"
+            f"结果: {result.message}"
+        )
+        self.post_message(
+            channel=channel,
+            mtype=NotificationType.Plugin,
+            title=title,
+            text=text,
+            userid=userid,
+        )
+
     def _build_adapter(self, adapter_name: AdapterType):
         if adapter_name == "clouddrive2_grpc":
             return CloudDriveGrpcAdapter(
@@ -755,6 +885,7 @@ class P115OfflineBridge(_PluginBase):
                 "p115_target_paths": self._p115_target_paths,
                 "p115_target_paths_parsed": self._parse_paths(self._p115_target_paths),
                 "auto_recognize_enabled": self._auto_recognize_enabled,
+                "auto_recognize_share_enabled": self._auto_recognize_share_enabled,
                 "auto_recognize_allow_http_torrent": self._auto_recognize_allow_http_torrent,
                 "cd2_host": self._cd2_host,
                 "cd2_port": self._cd2_port,
@@ -772,6 +903,17 @@ class P115OfflineBridge(_PluginBase):
             return
 
         link_text = str(event_data.get("arg_str") or "").strip()
+        share_urls = self._extract_share_urls(link_text)
+        if share_urls:
+            share_result = self._submit_share_links(share_urls=share_urls)
+            self._notify_share_submit(
+                result=share_result,
+                channel=event_data.get("channel"),
+                userid=event_data.get("user"),
+                force_notify=True,
+            )
+            return
+
         links = self._parse_links(link_text=link_text)
         if not links:
             self._notify_submit(
@@ -811,6 +953,18 @@ class P115OfflineBridge(_PluginBase):
         # 跳过命令，避免与 /p115_offline 指令重复触发
         if text.startswith("/"):
             return
+
+        if self._auto_recognize_share_enabled:
+            share_urls = self._extract_share_urls(text)
+            if share_urls:
+                share_result = self._submit_share_links(share_urls=share_urls)
+                self._notify_share_submit(
+                    result=share_result,
+                    channel=event_data.get("channel"),
+                    userid=event_data.get("userid") or event_data.get("user"),
+                    force_notify=True,
+                )
+                return
 
         links = self._extract_auto_links(text)
         if not links:
