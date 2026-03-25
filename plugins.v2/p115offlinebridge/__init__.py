@@ -1,0 +1,622 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+
+from app.core.config import settings
+from app.core.event import Event, eventmanager
+from app.log import logger
+from app.plugins import _PluginBase
+from app.schemas import NotificationType
+from app.schemas.types import EventType, MessageChannel
+
+from .adapters import (
+    AdapterType,
+    CloudDriveGrpcAdapter,
+    OfflineAddResult,
+    P115StrmHelperAdapter,
+)
+from .schemas import OfflineSubmitPayload, OfflineSubmitResult
+from .version import VERSION
+
+
+class P115OfflineBridge(_PluginBase):
+    """
+    115 离线下载桥接插件。
+    默认调用 P115StrmHelper 的既有能力，并支持切换到 CloudDrive2 gRPC。
+    """
+
+    plugin_name = "115离线桥接"
+    plugin_desc = "复用现有 115 能力提交离线任务，支持接口对象切换与系统通知。"
+    plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
+    plugin_version = VERSION
+    plugin_author = "Codex"
+    author_url = "https://github.com/openai"
+    plugin_config_prefix = "p115offlinebridge_"
+    plugin_order = 99
+    auth_level = 1
+
+    _enabled = False
+    _notify = True
+    _adapter: AdapterType = "p115_strmhelper"
+
+    _moviepilot_url = ""
+    _moviepilot_api_token = ""
+    _request_timeout = 20
+
+    _p115_target_path = ""
+
+    _cd2_host = "localhost"
+    _cd2_port = 19798
+    _cd2_username = ""
+    _cd2_password = ""
+    _cd2_target_path = "/"
+    _cd2_check_after_secs = 10
+
+    def init_plugin(self, config: dict = None):
+        conf = config or {}
+
+        self._enabled = bool(conf.get("enabled", False))
+        self._notify = bool(conf.get("notify", True))
+
+        adapter = str(conf.get("adapter") or "p115_strmhelper").strip()
+        if adapter not in ("p115_strmhelper", "clouddrive2_grpc"):
+            adapter = "p115_strmhelper"
+        self._adapter = adapter
+
+        self._moviepilot_url = (
+            str(conf.get("moviepilot_url") or self._default_moviepilot_url()).strip().rstrip("/")
+        )
+        self._moviepilot_api_token = str(
+            conf.get("moviepilot_api_token") or settings.API_TOKEN or ""
+        ).strip()
+
+        self._request_timeout = self._safe_int(conf.get("request_timeout"), 20)
+        if self._request_timeout <= 0:
+            self._request_timeout = 20
+
+        self._p115_target_path = str(conf.get("p115_target_path") or "").strip()
+
+        self._cd2_host = str(conf.get("cd2_host") or "localhost").strip() or "localhost"
+        self._cd2_port = self._safe_int(conf.get("cd2_port"), 19798)
+        self._cd2_username = str(conf.get("cd2_username") or "").strip()
+        self._cd2_password = str(conf.get("cd2_password") or "")
+        self._cd2_target_path = str(conf.get("cd2_target_path") or "/").strip() or "/"
+        self._cd2_check_after_secs = self._safe_int(
+            conf.get("cd2_check_after_secs"), 10
+        )
+        if self._cd2_check_after_secs < 0:
+            self._cd2_check_after_secs = 0
+
+    def _default_moviepilot_url(self) -> str:
+        try:
+            base = settings.MP_DOMAIN("")
+            if isinstance(base, str) and base.strip():
+                return base.rstrip("/")
+        except Exception:
+            pass
+        return "http://127.0.0.1:3000"
+
+    @staticmethod
+    def _safe_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def get_state(self) -> bool:
+        return self._enabled
+
+    @staticmethod
+    def get_command() -> List[Dict[str, Any]]:
+        return [
+            {
+                "cmd": "/p115_offline",
+                "event": EventType.PluginAction,
+                "desc": "提交 115 离线下载任务",
+                "category": "",
+                "data": {"action": "p115offlinebridge_add"},
+            }
+        ]
+
+    def get_api(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "path": "/submit",
+                "endpoint": self.submit_api,
+                "methods": ["POST"],
+                "auth": "apikey",
+                "summary": "提交离线任务",
+                "description": "提交离线下载任务并返回执行结果",
+            },
+            {
+                "path": "/status",
+                "endpoint": self.status_api,
+                "methods": ["GET"],
+                "auth": "apikey",
+                "summary": "查看插件状态",
+                "description": "返回当前启用状态和接口配置摘要",
+            },
+        ]
+
+    def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
+        return [
+            {
+                "component": "VForm",
+                "content": [
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "enabled",
+                                            "label": "启用插件",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "notify",
+                                            "label": "发送系统通知",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "adapter",
+                                            "label": "默认接口对象",
+                                            "items": [
+                                                {
+                                                    "title": "P115StrmHelper API（推荐）",
+                                                    "value": "p115_strmhelper",
+                                                },
+                                                {
+                                                    "title": "CloudDrive2 gRPC",
+                                                    "value": "clouddrive2_grpc",
+                                                },
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "moviepilot_url",
+                                            "label": "MoviePilot 地址",
+                                            "hint": "用于调用 P115StrmHelper 插件 API",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "moviepilot_api_token",
+                                            "label": "MoviePilot API Token",
+                                            "type": "{{ 'password' }}",
+                                            "hint": "留空时默认使用系统 API Token",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "p115_target_path",
+                                            "label": "P115 默认目标目录",
+                                            "hint": "例如 /电影/待整理，留空则走 P115StrmHelper 默认逻辑",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "request_timeout",
+                                            "label": "请求超时（秒）",
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "cd2_host",
+                                            "label": "CloudDrive2 Host",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "cd2_port",
+                                            "label": "CloudDrive2 Port",
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "cd2_username",
+                                            "label": "CloudDrive2 用户名",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "cd2_password",
+                                            "label": "CloudDrive2 密码",
+                                            "type": "{{ 'password' }}",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 8},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "cd2_target_path",
+                                            "label": "CloudDrive2 默认目标目录",
+                                            "hint": "仅在 CloudDrive2 接口对象下生效",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "cd2_check_after_secs",
+                                            "label": "CD2 检查延迟（秒）",
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "density": "compact",
+                                            "text": "命令用法：/p115_offline <磁力或下载链接>。支持多链接（换行/逗号分隔）。",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            }
+        ], {
+            "enabled": False,
+            "notify": True,
+            "adapter": "p115_strmhelper",
+            "moviepilot_url": self._default_moviepilot_url(),
+            "moviepilot_api_token": "",
+            "request_timeout": 20,
+            "p115_target_path": "",
+            "cd2_host": "localhost",
+            "cd2_port": 19798,
+            "cd2_username": "",
+            "cd2_password": "",
+            "cd2_target_path": "/",
+            "cd2_check_after_secs": 10,
+        }
+
+    def get_page(self) -> Optional[List[dict]]:
+        return [
+            {
+                "component": "VRow",
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "info",
+                                    "variant": "tonal",
+                                    "text": "本插件用于桥接 115 离线下载能力，默认调用 P115StrmHelper 的既有接口。",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+    def stop_service(self):
+        pass
+
+    @staticmethod
+    def _parse_links(links: Optional[List[str]] = None, link_text: Optional[str] = None) -> List[str]:
+        values: List[str] = []
+
+        if links:
+            values.extend([str(item) for item in links if item is not None])
+
+        if link_text:
+            values.append(str(link_text))
+
+        candidates: List[str] = []
+        for value in values:
+            normalized = (
+                value.replace("\r", "\n")
+                .replace("，", ",")
+                .replace("；", ";")
+                .strip()
+            )
+            if not normalized:
+                continue
+            for line in normalized.split("\n"):
+                parts = line.replace(";", ",").split(",")
+                for part in parts:
+                    token = part.strip()
+                    if token:
+                        candidates.append(token)
+
+        unique: List[str] = []
+        seen = set()
+        for item in candidates:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+
+        return unique
+
+    def _build_adapter(self, adapter_name: AdapterType):
+        if adapter_name == "clouddrive2_grpc":
+            return CloudDriveGrpcAdapter(
+                host=self._cd2_host,
+                port=self._cd2_port,
+                username=self._cd2_username,
+                password=self._cd2_password,
+                timeout=self._request_timeout,
+                check_after_secs=self._cd2_check_after_secs,
+            )
+
+        return P115StrmHelperAdapter(
+            moviepilot_url=self._moviepilot_url,
+            api_token=self._moviepilot_api_token,
+            timeout=self._request_timeout,
+        )
+
+    def _resolve_target_path(self, adapter_name: AdapterType, path: Optional[str]) -> Optional[str]:
+        if path and path.strip():
+            return path.strip()
+
+        if adapter_name == "clouddrive2_grpc":
+            return self._cd2_target_path or "/"
+
+        return self._p115_target_path or None
+
+    def _submit_links(
+        self,
+        links: List[str],
+        path: Optional[str] = None,
+        adapter_name: Optional[str] = None,
+    ) -> OfflineAddResult:
+        use_adapter = (adapter_name or self._adapter).strip()
+        if use_adapter not in ("p115_strmhelper", "clouddrive2_grpc"):
+            use_adapter = "p115_strmhelper"
+
+        typed_adapter: AdapterType = use_adapter  # type: ignore[assignment]
+        target_path = self._resolve_target_path(typed_adapter, path)
+        adapter = self._build_adapter(typed_adapter)
+        result = adapter.add_links(links=links, target_path=target_path)
+
+        if result.success:
+            logger.info(
+                "【%s】提交成功: adapter=%s total=%s target=%s",
+                self.plugin_name,
+                result.adapter,
+                result.total,
+                result.target_path,
+            )
+        else:
+            logger.warning(
+                "【%s】提交失败: adapter=%s total=%s target=%s message=%s",
+                self.plugin_name,
+                result.adapter,
+                result.total,
+                result.target_path,
+                result.message,
+            )
+
+        return result
+
+    def _notify_submit(
+        self,
+        result: OfflineAddResult,
+        channel: MessageChannel = None,
+        userid: Optional[str] = None,
+        force_notify: Optional[bool] = None,
+    ):
+        should_notify = self._notify if force_notify is None else bool(force_notify)
+        if not should_notify:
+            return
+
+        title = f"【{self.plugin_name}】离线任务提交{'成功' if result.success else '失败'}"
+        text = (
+            f"接口对象: {result.adapter}\n"
+            f"目标目录: {result.target_path or '-'}\n"
+            f"任务数量: {result.total}\n"
+            f"结果: {result.message}"
+        )
+        self.post_message(
+            channel=channel,
+            mtype=NotificationType.Plugin,
+            title=title,
+            text=text,
+            userid=userid,
+        )
+
+    def submit_api(self, payload: OfflineSubmitPayload) -> Dict[str, Any]:
+        if not self._enabled:
+            return {"code": -1, "msg": "插件未启用"}
+
+        links = self._parse_links(links=payload.links, link_text=payload.link_text)
+        if not links:
+            return {"code": -1, "msg": "未解析到可用链接"}
+
+        result = self._submit_links(
+            links=links,
+            path=payload.path,
+            adapter_name=payload.adapter,
+        )
+
+        self._notify_submit(result=result, force_notify=payload.notify)
+
+        data = OfflineSubmitResult(**result.to_dict()).model_dump()
+        return {
+            "code": 0 if result.success else -1,
+            "msg": result.message,
+            "data": data,
+        }
+
+    def status_api(self) -> Dict[str, Any]:
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "enabled": self._enabled,
+                "notify": self._notify,
+                "adapter": self._adapter,
+                "moviepilot_url": self._moviepilot_url,
+                "p115_target_path": self._p115_target_path,
+                "cd2_host": self._cd2_host,
+                "cd2_port": self._cd2_port,
+                "cd2_target_path": self._cd2_target_path,
+            },
+        }
+
+    @eventmanager.register(EventType.PluginAction)
+    def handle_plugin_action(self, event: Event):
+        if not self._enabled or not event:
+            return
+
+        event_data = event.event_data or {}
+        if event_data.get("action") != "p115offlinebridge_add":
+            return
+
+        link_text = str(event_data.get("arg_str") or "").strip()
+        links = self._parse_links(link_text=link_text)
+        if not links:
+            self._notify_submit(
+                result=OfflineAddResult(
+                    success=False,
+                    adapter=self._adapter,
+                    total=0,
+                    target_path=self._resolve_target_path(self._adapter, None),
+                    message="参数为空或无可用链接，命令格式：/p115_offline <链接>",
+                ),
+                channel=event_data.get("channel"),
+                userid=event_data.get("user"),
+                force_notify=True,
+            )
+            return
+
+        result = self._submit_links(links=links)
+        self._notify_submit(
+            result=result,
+            channel=event_data.get("channel"),
+            userid=event_data.get("user"),
+            force_notify=True,
+        )
