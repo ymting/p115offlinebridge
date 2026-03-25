@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
@@ -44,6 +45,10 @@ class P115OfflineBridge(_PluginBase):
     _request_timeout = 20
 
     _p115_target_path = ""
+    _p115_path_select_mode = "fixed"
+    _p115_target_paths = ""
+    _auto_recognize_enabled = True
+    _auto_recognize_allow_http_torrent = True
 
     _cd2_host = "localhost"
     _cd2_port = 19798
@@ -75,6 +80,16 @@ class P115OfflineBridge(_PluginBase):
             self._request_timeout = 20
 
         self._p115_target_path = str(conf.get("p115_target_path") or "").strip()
+        self._p115_path_select_mode = str(
+            conf.get("p115_path_select_mode") or "fixed"
+        ).strip()
+        if self._p115_path_select_mode not in ("fixed", "round_robin", "random"):
+            self._p115_path_select_mode = "fixed"
+        self._p115_target_paths = str(conf.get("p115_target_paths") or "").strip()
+        self._auto_recognize_enabled = bool(conf.get("auto_recognize_enabled", True))
+        self._auto_recognize_allow_http_torrent = bool(
+            conf.get("auto_recognize_allow_http_torrent", True)
+        )
 
         self._cd2_host = str(conf.get("cd2_host") or "localhost").strip() or "localhost"
         self._cd2_port = self._safe_int(conf.get("cd2_port"), 19798)
@@ -238,7 +253,7 @@ class P115OfflineBridge(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -253,7 +268,30 @@ class P115OfflineBridge(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "p115_path_select_mode",
+                                            "label": "P115 目录选择模式",
+                                            "items": [
+                                                {"title": "固定目录", "value": "fixed"},
+                                                {
+                                                    "title": "多目录轮询",
+                                                    "value": "round_robin",
+                                                },
+                                                {"title": "多目录随机", "value": "random"},
+                                            ],
+                                            "hint": "固定目录使用上方默认目录；轮询/随机使用多目录列表",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -265,6 +303,28 @@ class P115OfflineBridge(_PluginBase):
                                     }
                                 ],
                             },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "p115_target_paths",
+                                            "label": "P115 多目录列表",
+                                            "rows": 3,
+                                            "auto-grow": True,
+                                            "hint": "每行一个目录，例如 /电影/目录A",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            }
                         ],
                     },
                     {
@@ -365,6 +425,37 @@ class P115OfflineBridge(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "auto_recognize_enabled",
+                                            "label": "自动识别用户消息",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 8},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "auto_recognize_allow_http_torrent",
+                                            "label": "自动识别 .torrent 链接",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12},
                                 "content": [
                                     {
@@ -373,7 +464,7 @@ class P115OfflineBridge(_PluginBase):
                                             "type": "info",
                                             "variant": "tonal",
                                             "density": "compact",
-                                            "text": "命令用法：/p115_offline <磁力或下载链接>。支持多链接（换行/逗号分隔）。",
+                                            "text": "命令用法：/p115_offline <磁力或下载链接>。也支持直接发送磁力链接自动识别。",
                                         },
                                     }
                                 ],
@@ -390,6 +481,10 @@ class P115OfflineBridge(_PluginBase):
             "moviepilot_api_token": "",
             "request_timeout": 20,
             "p115_target_path": "",
+            "p115_path_select_mode": "fixed",
+            "p115_target_paths": "",
+            "auto_recognize_enabled": True,
+            "auto_recognize_allow_http_torrent": True,
             "cd2_host": "localhost",
             "cd2_port": 19798,
             "cd2_username": "",
@@ -461,6 +556,81 @@ class P115OfflineBridge(_PluginBase):
 
         return unique
 
+    @staticmethod
+    def _parse_paths(path_text: str) -> List[str]:
+        if not path_text:
+            return []
+        raw_items = (
+            path_text.replace("\r", "\n")
+            .replace("，", ",")
+            .replace("；", ";")
+            .replace(";", ",")
+        )
+        paths: List[str] = []
+        for line in raw_items.split("\n"):
+            for token in line.split(","):
+                p = token.strip()
+                if not p:
+                    continue
+                if not p.startswith("/"):
+                    p = "/" + p
+                paths.append(p)
+
+        unique: List[str] = []
+        seen = set()
+        for item in paths:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
+
+    def _select_p115_target_path(self) -> Optional[str]:
+        fixed = self._p115_target_path.strip() if self._p115_target_path else ""
+        candidates = self._parse_paths(self._p115_target_paths)
+        mode = self._p115_path_select_mode
+
+        if mode == "fixed":
+            if fixed:
+                return fixed
+            return candidates[0] if candidates else None
+
+        if not candidates:
+            return fixed or None
+
+        if mode == "random":
+            return random.choice(candidates)
+
+        # round_robin
+        idx = self._safe_int(self.get_data("p115_path_rr_index"), 0)
+        selected = candidates[idx % len(candidates)]
+        self.save_data("p115_path_rr_index", (idx + 1) % len(candidates))
+        return selected
+
+    def _extract_auto_links(self, text: str) -> List[str]:
+        parsed = self._parse_links(link_text=text)
+        links: List[str] = []
+        for token in parsed:
+            lower = token.lower()
+            if lower.startswith("magnet:?"):
+                links.append(token)
+                continue
+            if (
+                self._auto_recognize_allow_http_torrent
+                and (lower.startswith("http://") or lower.startswith("https://"))
+                and ".torrent" in lower
+            ):
+                links.append(token)
+        # 去重
+        unique: List[str] = []
+        seen = set()
+        for item in links:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
+
     def _build_adapter(self, adapter_name: AdapterType):
         if adapter_name == "clouddrive2_grpc":
             return CloudDriveGrpcAdapter(
@@ -485,7 +655,7 @@ class P115OfflineBridge(_PluginBase):
         if adapter_name == "clouddrive2_grpc":
             return self._cd2_target_path or "/"
 
-        return self._p115_target_path or None
+        return self._select_p115_target_path()
 
     def _submit_links(
         self,
@@ -581,6 +751,11 @@ class P115OfflineBridge(_PluginBase):
                 "adapter": self._adapter,
                 "moviepilot_url": self._moviepilot_url,
                 "p115_target_path": self._p115_target_path,
+                "p115_path_select_mode": self._p115_path_select_mode,
+                "p115_target_paths": self._p115_target_paths,
+                "p115_target_paths_parsed": self._parse_paths(self._p115_target_paths),
+                "auto_recognize_enabled": self._auto_recognize_enabled,
+                "auto_recognize_allow_http_torrent": self._auto_recognize_allow_http_torrent,
                 "cd2_host": self._cd2_host,
                 "cd2_port": self._cd2_port,
                 "cd2_target_path": self._cd2_target_path,
@@ -618,5 +793,33 @@ class P115OfflineBridge(_PluginBase):
             result=result,
             channel=event_data.get("channel"),
             userid=event_data.get("user"),
+            force_notify=True,
+        )
+
+    @eventmanager.register(EventType.UserMessage)
+    def handle_user_message_auto_submit(self, event: Event):
+        """
+        自动识别用户发送的磁力链接并提交离线任务。
+        """
+        if not self._enabled or not self._auto_recognize_enabled or not event:
+            return
+
+        event_data = event.event_data or {}
+        text = str(event_data.get("text") or "").strip()
+        if not text:
+            return
+        # 跳过命令，避免与 /p115_offline 指令重复触发
+        if text.startswith("/"):
+            return
+
+        links = self._extract_auto_links(text)
+        if not links:
+            return
+
+        result = self._submit_links(links=links)
+        self._notify_submit(
+            result=result,
+            channel=event_data.get("channel"),
+            userid=event_data.get("userid") or event_data.get("user"),
             force_notify=True,
         )

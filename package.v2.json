@@ -3,12 +3,13 @@
     "name": "115离线桥接",
     "description": "复用已有 115 离线下载能力，支持接口对象切换与系统通知。",
     "labels": "云盘",
-    "version": "1.0.2",
+    "version": "1.1.0",
     "release": true,
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Codex",
     "level": 1,
     "history": {
+      "v1.1.0": "新增 P115 目录选择模式（固定/轮询/随机）；支持直接发送磁力链接自动识别提交。",
       "v1.0.2": "发布 GitHub Release 安装包，恢复官方 release 安装链路。",
       "v1.0.1": "修复安装方式：改为文件列表安装，避免未发布 GitHub Release 时安装失败。",
       "v1.0.0": "发布：支持通过 P115StrmHelper 或 CloudDrive2 gRPC 提交离线下载任务，并发送系统通知。"
