@@ -1,0 +1,4 @@
+- 修复消息自动识别：支持从整句文本提取 115 分享链接与磁力链接
+- 增强消息字段兼容：自动识别新增 content/message/arg_str 回退
+- 优化日志与返回文案：统一为“115离线桥接下游接口（P115StrmHelper）”，避免误解为其他插件
+- 修复 CloudDrive2 依赖冲突：protobuf 升级至 6.31.1，解决 gencode/runtime 版本不兼容

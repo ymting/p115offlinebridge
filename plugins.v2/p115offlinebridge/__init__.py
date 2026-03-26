@@ -55,6 +55,8 @@ class P115OfflineBridge(_PluginBase):
     _u115_share_url_pattern = re.compile(
         r"^https?://(.*\.)?115[^/]*\.[a-zA-Z]{2,}(?:/|$)", re.IGNORECASE
     )
+    _url_extract_pattern = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+    _magnet_extract_pattern = re.compile(r"magnet:\?[^\s<>\"'`]+", re.IGNORECASE)
     _share_code_pattern = re.compile(r"([a-zA-Z0-9]{4})")
 
     _cd2_host = "localhost"
@@ -240,10 +242,55 @@ class P115OfflineBridge(_PluginBase):
 
         return unique
 
+    @staticmethod
+    def _strip_trailing_punctuation(token: str) -> str:
+        return token.rstrip(".,;:!?)]}>\"'，。；：！？）】》」』、")
+
+    @classmethod
+    def _extract_urls_from_text(cls, text: str) -> List[str]:
+        if not text:
+            return []
+        result: List[str] = []
+        for raw in cls._url_extract_pattern.findall(text):
+            token = cls._strip_trailing_punctuation(str(raw).strip())
+            if token:
+                result.append(token)
+        unique: List[str] = []
+        seen = set()
+        for item in result:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
+
+    @classmethod
+    def _extract_magnets_from_text(cls, text: str) -> List[str]:
+        if not text:
+            return []
+        result: List[str] = []
+        for raw in cls._magnet_extract_pattern.findall(text):
+            token = cls._strip_trailing_punctuation(str(raw).strip())
+            if token:
+                result.append(token)
+        unique: List[str] = []
+        seen = set()
+        for item in result:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
+
     def _extract_auto_links(self, text: str) -> List[str]:
         parsed = self._parse_links(link_text=text)
+        parsed.extend(self._extract_urls_from_text(text))
+        parsed.extend(self._extract_magnets_from_text(text))
         links: List[str] = []
         for token in parsed:
+            token = self._strip_trailing_punctuation(str(token).strip())
+            if not token:
+                continue
             lower = token.lower()
             if lower.startswith("magnet:?"):
                 links.append(token)
@@ -302,9 +349,13 @@ class P115OfflineBridge(_PluginBase):
 
     def _extract_share_urls(self, text: str) -> List[str]:
         parsed_tokens = self._parse_links(link_text=text)
+        parsed_tokens.extend(self._extract_urls_from_text(text))
         access_code = self._extract_access_code(text)
         result: List[str] = []
         for token in parsed_tokens:
+            token = self._strip_trailing_punctuation(str(token).strip())
+            if not token:
+                continue
             if not self._is_115_share_url(token):
                 continue
             result.append(self._normalize_115_share_url(token, access_code))
@@ -642,7 +693,13 @@ class P115OfflineBridge(_PluginBase):
             return
 
         event_data = event.event_data or {}
-        text = str(event_data.get("text") or "").strip()
+        text = str(
+            event_data.get("text")
+            or event_data.get("content")
+            or event_data.get("message")
+            or event_data.get("arg_str")
+            or ""
+        ).strip()
         if not text:
             return
         # 跳过命令，避免与 /p115_offline 指令重复触发

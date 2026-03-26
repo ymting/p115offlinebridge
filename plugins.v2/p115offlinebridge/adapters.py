@@ -75,6 +75,24 @@ class P115StrmHelperAdapter:
         self._timeout = timeout
 
     @staticmethod
+    def _downstream_label() -> str:
+        return "115离线桥接下游接口（P115StrmHelper）"
+
+    @staticmethod
+    def _sanitize_downstream_message(message: Any) -> str:
+        text = str(message or "").strip()
+        if not text:
+            return ""
+        replacements = {
+            "115STRM助手": "下游接口",
+            "115网盘STRM助手": "下游接口",
+            "P115StrmHelper": "下游接口",
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        return text
+
+    @staticmethod
     def _load_json_body(response: Any) -> Optional[dict]:
         body = None
         try:
@@ -134,7 +152,10 @@ class P115StrmHelperAdapter:
                     adapter="p115_strmhelper",
                     total=len(links),
                     target_path=target_path,
-                    message=f"调用 P115StrmHelper API 失败：无响应（{self._moviepilot_url}）",
+                    message=(
+                        f"{self._downstream_label()}调用失败："
+                        f"无响应（{self._moviepilot_url}）"
+                    ),
                 )
 
             body = self._load_json_body(response)
@@ -144,12 +165,13 @@ class P115StrmHelperAdapter:
                 if isinstance(body, dict):
                     err_msg = body.get("msg") or body.get("message")
                 err_msg = err_msg or f"HTTP {response.status_code}"
+                err_msg = self._sanitize_downstream_message(err_msg)
                 return OfflineAddResult(
                     success=False,
                     adapter="p115_strmhelper",
                     total=len(links),
                     target_path=target_path,
-                    message=f"调用失败：{err_msg}",
+                    message=f"{self._downstream_label()}返回错误：{err_msg}",
                 )
 
             if not body:
@@ -162,7 +184,7 @@ class P115StrmHelperAdapter:
                 )
 
             code = int(body.get("code", 0))
-            msg = str(body.get("msg") or "")
+            msg = self._sanitize_downstream_message(body.get("msg"))
             if code == 0:
                 return OfflineAddResult(
                     success=True,
@@ -180,13 +202,17 @@ class P115StrmHelperAdapter:
                 message=msg or "离线任务提交失败",
             )
         except Exception as err:
-            logger.error("调用 P115StrmHelper API 异常: %s", err, exc_info=True)
+            logger.error(
+                "【115离线桥接】下游接口 P115StrmHelper 调用异常: %s",
+                err,
+                exc_info=True,
+            )
             return OfflineAddResult(
                 success=False,
                 adapter="p115_strmhelper",
                 total=len(links),
                 target_path=target_path,
-                message=f"调用异常：{err}",
+                message=f"{self._downstream_label()}调用异常：{err}",
             )
 
     def add_share_urls(self, share_urls: List[str]) -> ShareAddResult:
@@ -244,9 +270,8 @@ class P115StrmHelperAdapter:
                 if response.status_code >= 400:
                     failed_count += 1
                     if isinstance(body, dict):
-                        fail_messages.append(
-                            str(body.get("msg") or body.get("message") or response.status_code)
-                        )
+                        err_msg = body.get("msg") or body.get("message") or response.status_code
+                        fail_messages.append(self._sanitize_downstream_message(err_msg))
                     else:
                         fail_messages.append(str(response.status_code))
                     continue
@@ -257,14 +282,20 @@ class P115StrmHelperAdapter:
                         success_count += 1
                     else:
                         failed_count += 1
-                        fail_messages.append(str(body.get("msg") or "转存失败"))
+                        fail_messages.append(
+                            self._sanitize_downstream_message(body.get("msg") or "转存失败")
+                        )
                 else:
                     failed_count += 1
                     fail_messages.append("响应不是有效 JSON")
             except Exception as err:
                 failed_count += 1
                 fail_messages.append(str(err))
-                logger.error("调用分享转存 API 异常: %s", err, exc_info=True)
+                logger.error(
+                    "【115离线桥接】下游接口 P115StrmHelper 分享转存调用异常: %s",
+                    err,
+                    exc_info=True,
+                )
 
         total = len(share_urls)
         ok = failed_count == 0
@@ -272,7 +303,10 @@ class P115StrmHelperAdapter:
             message = f"分享转存任务提交成功（{success_count}/{total}）"
         else:
             first_fail = fail_messages[0] if fail_messages else "未知错误"
-            message = f"分享转存部分/全部失败（成功 {success_count}，失败 {failed_count}）：{first_fail}"
+            message = (
+                f"分享转存部分/全部失败（成功 {success_count}，失败 {failed_count}）："
+                f"{self._downstream_label()}返回 {first_fail}"
+            )
 
         return ShareAddResult(
             success=ok,
@@ -328,7 +362,10 @@ class P115StrmHelperAdapter:
                     adapter="p115_strmhelper",
                     path=normalized_path,
                     items=[],
-                    message=f"调用 P115StrmHelper 浏览目录 API 失败：无响应（{self._moviepilot_url}）",
+                    message=(
+                        f"{self._downstream_label()}浏览目录调用失败："
+                        f"无响应（{self._moviepilot_url}）"
+                    ),
                 )
 
             body = self._load_json_body(response)
@@ -337,6 +374,7 @@ class P115StrmHelperAdapter:
                 if body:
                     err_msg = body.get("msg") or body.get("message")
                 err_msg = err_msg or f"HTTP {response.status_code}"
+                err_msg = self._sanitize_downstream_message(err_msg)
                 return BrowseDirResult(
                     success=False,
                     adapter="p115_strmhelper",
@@ -361,7 +399,9 @@ class P115StrmHelperAdapter:
                     adapter="p115_strmhelper",
                     path=normalized_path,
                     items=[],
-                    message=str(body.get("msg") or "浏览目录失败"),
+                    message=self._sanitize_downstream_message(
+                        body.get("msg") or "浏览目录失败"
+                    ),
                 )
 
             data = body.get("data")
@@ -397,13 +437,17 @@ class P115StrmHelperAdapter:
                 message="ok",
             )
         except Exception as err:
-            logger.error("调用 P115StrmHelper 浏览目录 API 异常: %s", err, exc_info=True)
+            logger.error(
+                "【115离线桥接】下游接口 P115StrmHelper 浏览目录调用异常: %s",
+                err,
+                exc_info=True,
+            )
             return BrowseDirResult(
                 success=False,
                 adapter="p115_strmhelper",
                 path=normalized_path,
                 items=[],
-                message=f"调用异常：{err}",
+                message=f"{self._downstream_label()}调用异常：{err}",
             )
 
 
