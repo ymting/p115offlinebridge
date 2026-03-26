@@ -1,0 +1,3 @@
+- 修复 CloudDrive2 protobuf 运行时冲突：CloudDrive2 目录浏览与离线提交优先使用 `clouddrive2-client`
+- gRPC 直连仅保留为兜底路径，降低 `gencode/runtime` 版本错配触发概率
+- 新增依赖：`clouddrive2-client==0.2.2`
