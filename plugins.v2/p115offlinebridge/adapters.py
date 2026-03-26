@@ -105,6 +105,7 @@ class P115StrmHelperAdapter:
         return body if isinstance(body, dict) else None
 
     def add_links(self, links: List[str], target_path: Optional[str] = None) -> OfflineAddResult:
+        target_path = str(target_path or "").strip() or None
         if not links:
             return OfflineAddResult(
                 success=False,
@@ -133,8 +134,15 @@ class P115StrmHelperAdapter:
             )
 
         payload = {"links": links}
+        request_params = {"apikey": self._api_token}
         if target_path:
+            # 兼容不同历史版本字段名，避免下游忽略 path 导致落回默认目录。
             payload["path"] = target_path
+            payload["target_path"] = target_path
+            payload["savepath"] = target_path
+            payload["dir_path"] = target_path
+            request_params["path"] = target_path
+            request_params["savepath"] = target_path
 
         url = f"{self._moviepilot_url}/api/v1/plugin/P115StrmHelper/add_offline_task"
         try:
@@ -143,7 +151,7 @@ class P115StrmHelperAdapter:
                 timeout=self._timeout,
             ).post_res(
                 url=url,
-                params={"apikey": self._api_token},
+                params=request_params,
                 json=payload,
             )
             if not response:

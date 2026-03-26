@@ -86,7 +86,17 @@ class P115OfflineBridge(_PluginBase):
         if self._request_timeout <= 0:
             self._request_timeout = 20
 
-        self._p115_target_path = str(conf.get("p115_target_path") or "").strip()
+        # v1.4.0 前存在多目录模式字段，兼容旧配置升级后的目录迁移。
+        p115_target_path = self._normalize_target_path(conf.get("p115_target_path"))
+        if not p115_target_path:
+            p115_target_path = self._extract_legacy_p115_target_path(conf)
+            if p115_target_path:
+                logger.info(
+                    "【%s】检测到旧版目录配置，已兼容迁移为固定目录: %s",
+                    self.plugin_name,
+                    p115_target_path,
+                )
+        self._p115_target_path = p115_target_path
         self._auto_recognize_enabled = bool(conf.get("auto_recognize_enabled", True))
         self._auto_recognize_allow_http_torrent = bool(
             conf.get("auto_recognize_allow_http_torrent", True)
@@ -99,7 +109,7 @@ class P115OfflineBridge(_PluginBase):
         self._cd2_port = self._safe_int(conf.get("cd2_port"), 19798)
         self._cd2_username = str(conf.get("cd2_username") or "").strip()
         self._cd2_password = str(conf.get("cd2_password") or "")
-        self._cd2_target_path = str(conf.get("cd2_target_path") or "/").strip() or "/"
+        self._cd2_target_path = self._normalize_target_path(conf.get("cd2_target_path")) or "/"
         self._cd2_check_after_secs = self._safe_int(
             conf.get("cd2_check_after_secs"), 10
         )
@@ -112,6 +122,39 @@ class P115OfflineBridge(_PluginBase):
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _normalize_target_path(path: Any) -> str:
+        value = str(path or "").strip().replace("\\", "/")
+        if not value:
+            return ""
+        if not value.startswith("/"):
+            value = "/" + value
+        if len(value) > 1:
+            value = value.rstrip("/") or "/"
+        return value
+
+    def _extract_legacy_p115_target_path(self, conf: Dict[str, Any]) -> str:
+        # 历史版本字段：
+        # - p115_path_select_mode: fixed/round_robin/random
+        # - p115_target_paths: 多行目录
+        legacy_paths = str(conf.get("p115_target_paths") or "").strip()
+        if not legacy_paths:
+            return ""
+
+        candidates: List[str] = []
+        for raw in legacy_paths.replace("\r", "\n").split("\n"):
+            normalized = self._normalize_target_path(raw)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+        if not candidates:
+            return ""
+
+        legacy_mode = str(conf.get("p115_path_select_mode") or "").strip()
+        # 移除多目录模式后，统一收敛到固定目录，优先取第一条。
+        if legacy_mode in ("fixed", "round_robin", "random"):
+            return candidates[0]
+        return candidates[0]
 
     def get_state(self) -> bool:
         return self._enabled

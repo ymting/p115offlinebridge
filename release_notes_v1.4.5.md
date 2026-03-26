@@ -1,0 +1,3 @@
+- 修复目录配置生效异常：兼容旧版 `p115_target_paths` / `p115_path_select_mode`，升级后自动迁移为固定目录
+- 修复下游参数兼容问题：调用 `P115StrmHelper/add_offline_task` 时同时发送 `path` / `savepath` / `target_path` / `dir_path`
+- 新增请求参数兜底：在 query 中同步携带目录参数，降低下游版本差异导致回退默认目录的概率
