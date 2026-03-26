@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -49,8 +48,6 @@ class P115OfflineBridge(_PluginBase):
     _request_timeout = 20
 
     _p115_target_path = ""
-    _p115_path_select_mode = "fixed"
-    _p115_target_paths = ""
     _auto_recognize_enabled = True
     _auto_recognize_allow_http_torrent = True
     _auto_recognize_share_enabled = True
@@ -78,9 +75,7 @@ class P115OfflineBridge(_PluginBase):
             adapter = "p115_strmhelper"
         self._adapter = adapter
 
-        self._moviepilot_url = (
-            str(conf.get("moviepilot_url") or self._default_moviepilot_url()).strip().rstrip("/")
-        )
+        self._moviepilot_url = str(conf.get("moviepilot_url") or "").strip().rstrip("/")
         self._moviepilot_api_token = str(
             conf.get("moviepilot_api_token") or settings.API_TOKEN or ""
         ).strip()
@@ -90,12 +85,6 @@ class P115OfflineBridge(_PluginBase):
             self._request_timeout = 20
 
         self._p115_target_path = str(conf.get("p115_target_path") or "").strip()
-        self._p115_path_select_mode = str(
-            conf.get("p115_path_select_mode") or "fixed"
-        ).strip()
-        if self._p115_path_select_mode not in ("fixed", "round_robin", "random"):
-            self._p115_path_select_mode = "fixed"
-        self._p115_target_paths = str(conf.get("p115_target_paths") or "").strip()
         self._auto_recognize_enabled = bool(conf.get("auto_recognize_enabled", True))
         self._auto_recognize_allow_http_torrent = bool(
             conf.get("auto_recognize_allow_http_torrent", True)
@@ -114,15 +103,6 @@ class P115OfflineBridge(_PluginBase):
         )
         if self._cd2_check_after_secs < 0:
             self._cd2_check_after_secs = 0
-
-    def _default_moviepilot_url(self) -> str:
-        try:
-            base = settings.MP_DOMAIN("")
-            if isinstance(base, str) and base.strip():
-                return base.rstrip("/")
-        except Exception:
-            pass
-        return "http://127.0.0.1:3000"
 
     @staticmethod
     def _safe_int(value: Any, default: int) -> int:
@@ -172,6 +152,22 @@ class P115OfflineBridge(_PluginBase):
                 "summary": "浏览115目录",
                 "description": "调用 P115StrmHelper 的 browse_dir 接口浏览网盘目录",
             },
+            {
+                "path": "/browse_cd2_dir",
+                "endpoint": self.browse_cd2_dir_api,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "浏览CloudDrive2目录",
+                "description": "通过 CloudDrive2 gRPC 浏览目录",
+            },
+            {
+                "path": "/set_adapter",
+                "endpoint": self.set_adapter_api,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "立即切换接口对象",
+                "description": "切换默认接口对象并立即生效",
+            },
         ]
 
     @staticmethod
@@ -183,12 +179,10 @@ class P115OfflineBridge(_PluginBase):
             "enabled": False,
             "notify": True,
             "adapter": "p115_strmhelper",
-            "moviepilot_url": self._default_moviepilot_url(),
+            "moviepilot_url": "",
             "moviepilot_api_token": "",
             "request_timeout": 20,
             "p115_target_path": "",
-            "p115_path_select_mode": "fixed",
-            "p115_target_paths": "",
             "auto_recognize_enabled": True,
             "auto_recognize_share_enabled": True,
             "auto_recognize_allow_http_torrent": True,
@@ -245,57 +239,6 @@ class P115OfflineBridge(_PluginBase):
             unique.append(item)
 
         return unique
-
-    @staticmethod
-    def _parse_paths(path_text: str) -> List[str]:
-        if not path_text:
-            return []
-        raw_items = (
-            path_text.replace("\r", "\n")
-            .replace("，", ",")
-            .replace("；", ";")
-            .replace(";", ",")
-        )
-        paths: List[str] = []
-        for line in raw_items.split("\n"):
-            for token in line.split(","):
-                p = token.strip()
-                if not p:
-                    continue
-                if not p.startswith("/"):
-                    p = "/" + p
-                paths.append(p)
-
-        unique: List[str] = []
-        seen = set()
-        for item in paths:
-            if item in seen:
-                continue
-            seen.add(item)
-            unique.append(item)
-        return unique
-
-    def _select_p115_target_path(self) -> Optional[str]:
-        fixed = self._p115_target_path.strip() if self._p115_target_path else ""
-        candidates = self._parse_paths(self._p115_target_paths)
-        mode = self._p115_path_select_mode
-
-        if mode == "fixed":
-            if fixed:
-                return fixed
-            return candidates[0] if candidates else None
-
-        if not candidates:
-            return fixed or None
-
-        if mode == "random":
-            return random.choice(candidates)
-
-        # round_robin
-        idx = self._safe_int(self.get_data("p115_path_rr_index"), 0)
-        selected = candidates[idx % len(candidates)]
-        self.save_data("p115_path_rr_index", (idx + 1) % len(candidates))
-        return selected
 
     def _extract_auto_links(self, text: str) -> List[str]:
         parsed = self._parse_links(link_text=text)
@@ -449,7 +392,7 @@ class P115OfflineBridge(_PluginBase):
         if adapter_name == "clouddrive2_grpc":
             return self._cd2_target_path or "/"
 
-        return self._select_p115_target_path()
+        return self._p115_target_path or None
 
     def _submit_links(
         self,
@@ -545,9 +488,6 @@ class P115OfflineBridge(_PluginBase):
                 "adapter": self._adapter,
                 "moviepilot_url": self._moviepilot_url,
                 "p115_target_path": self._p115_target_path,
-                "p115_path_select_mode": self._p115_path_select_mode,
-                "p115_target_paths": self._p115_target_paths,
-                "p115_target_paths_parsed": self._parse_paths(self._p115_target_paths),
                 "auto_recognize_enabled": self._auto_recognize_enabled,
                 "auto_recognize_share_enabled": self._auto_recognize_share_enabled,
                 "auto_recognize_allow_http_torrent": self._auto_recognize_allow_http_torrent,
@@ -598,6 +538,54 @@ class P115OfflineBridge(_PluginBase):
                 "path": result.path or normalized_path,
                 "items": [item.to_dict() for item in result.items if item.is_dir],
             },
+        }
+
+    def browse_cd2_dir_api(self, path: str = "/") -> Dict[str, Any]:
+        normalized_path = self._normalize_browse_path(path)
+        adapter = CloudDriveGrpcAdapter(
+            host=self._cd2_host,
+            port=self._cd2_port,
+            username=self._cd2_username,
+            password=self._cd2_password,
+            timeout=self._request_timeout,
+            check_after_secs=self._cd2_check_after_secs,
+        )
+        result = adapter.browse_dir(path=normalized_path)
+        if not result.success:
+            return {
+                "code": -1,
+                "msg": result.message,
+                "data": {"path": normalized_path, "items": []},
+            }
+
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "path": normalized_path,
+                "items": [item.to_dict() for item in result.items if item.is_dir],
+            },
+        }
+
+    def set_adapter_api(self, adapter: str) -> Dict[str, Any]:
+        target = str(adapter or "").strip()
+        if target not in ("p115_strmhelper", "clouddrive2_grpc"):
+            return {"code": -1, "msg": "不支持的接口对象"}
+
+        conf = self.get_config() or {}
+        if not isinstance(conf, dict):
+            conf = {}
+        merged = self._default_form_model()
+        merged.update(conf)
+        merged["adapter"] = target
+
+        self.update_config(merged)
+        self.init_plugin(merged)
+
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {"adapter": self._adapter},
         }
 
     @eventmanager.register(EventType.PluginAction)

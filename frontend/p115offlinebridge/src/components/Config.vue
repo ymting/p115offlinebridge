@@ -26,12 +26,13 @@
         <v-col cols="12" md="6">
           <v-select
             v-model="config.adapter"
-            label="默认接口对象"
+            label="默认接口对象（切换即生效）"
             :items="adapterOptions"
             item-title="title"
             item-value="value"
             density="comfortable"
             variant="outlined"
+            :loading="adapterSwitching"
           />
         </v-col>
       </v-row>
@@ -41,7 +42,7 @@
           <v-text-field
             v-model="config.moviepilot_url"
             label="MoviePilot 地址"
-            hint="用于调用 P115StrmHelper 插件 API；若外网地址不可达会自动回退本机地址"
+            hint="仅按此地址调用 P115StrmHelper（不再自动回退默认地址）"
             persistent-hint
             density="comfortable"
             variant="outlined"
@@ -68,10 +69,10 @@
       </v-row>
 
       <v-row>
-        <v-col cols="12" md="7">
+        <v-col cols="12" md="8">
           <v-text-field
             v-model="config.p115_target_path"
-            label="P115 默认目标目录"
+            label="P115 固定目标目录"
             hint="点击右侧按钮浏览 115 目录并自动回填"
             persistent-hint
             density="comfortable"
@@ -82,15 +83,15 @@
                 variant="tonal"
                 color="primary"
                 prepend-icon="mdi-folder-search"
-                :loading="dirDialog.loading && dirDialog.target === 'default'"
-                @click="openDirSelector('default')"
+                :loading="dirDialog.loading && dirDialog.provider === 'p115'"
+                @click="openDirSelector('p115')"
               >
                 选择115目录
               </v-btn>
             </template>
           </v-text-field>
         </v-col>
-        <v-col cols="12" md="5">
+        <v-col cols="12" md="4">
           <v-text-field
             v-model.number="config.request_timeout"
             label="请求超时（秒）"
@@ -98,66 +99,6 @@
             density="comfortable"
             variant="outlined"
           />
-        </v-col>
-      </v-row>
-
-      <v-row>
-        <v-col cols="12" md="4">
-          <v-select
-            v-model="config.p115_path_select_mode"
-            label="P115 目录选择模式"
-            :items="pathModeOptions"
-            item-title="title"
-            item-value="value"
-            density="comfortable"
-            variant="outlined"
-            hint="固定目录使用上方默认目录；轮询/随机使用多目录列表"
-            persistent-hint
-          />
-        </v-col>
-        <v-col cols="12" md="8">
-          <div v-if="config.p115_path_select_mode !== 'fixed'">
-            <v-textarea
-              v-model="config.p115_target_paths"
-              label="P115 多目录列表（每行一个）"
-              rows="4"
-              auto-grow
-              density="comfortable"
-              variant="outlined"
-              hint="可点击右侧按钮选择目录并自动追加"
-              persistent-hint
-            >
-              <template #append>
-                <v-btn
-                  variant="tonal"
-                  color="primary"
-                  prepend-icon="mdi-folder-multiple"
-                  :loading="dirDialog.loading && dirDialog.target === 'multi'"
-                  @click="openDirSelector('multi')"
-                >
-                  添加目录
-                </v-btn>
-              </template>
-            </v-textarea>
-            <div class="d-flex flex-wrap ga-2 mt-2">
-              <v-chip
-                v-for="(item, index) in multiPathItems"
-                :key="item"
-                closable
-                size="small"
-                color="primary"
-                variant="tonal"
-                @click:close="removeMultiPath(index)"
-              >
-                {{ item }}
-              </v-chip>
-            </div>
-          </div>
-          <div v-else>
-            <v-alert type="info" variant="tonal" density="comfortable">
-              当前为“固定目录”模式：只会使用上方“P115 默认目标目录”。多目录列表可忽略。
-            </v-alert>
-          </div>
         </v-col>
       </v-row>
 
@@ -212,11 +153,23 @@
           <v-text-field
             v-model="config.cd2_target_path"
             label="CloudDrive2 默认目标目录"
-            hint="仅在 CloudDrive2 接口对象下生效"
+            hint="点击右侧按钮浏览 CloudDrive2 目录并自动回填"
             persistent-hint
             density="comfortable"
             variant="outlined"
-          />
+          >
+            <template #append>
+              <v-btn
+                variant="tonal"
+                color="primary"
+                prepend-icon="mdi-folder-network"
+                :loading="dirDialog.loading && dirDialog.provider === 'cd2'"
+                @click="openDirSelector('cd2')"
+              >
+                选择CD2目录
+              </v-btn>
+            </template>
+          </v-text-field>
         </v-col>
         <v-col cols="12" md="4">
           <v-text-field
@@ -274,8 +227,12 @@
   <v-dialog v-model="dirDialog.show" max-width="760">
     <v-card rounded="lg">
       <v-card-title class="d-flex align-center">
-        <v-icon icon="mdi-folder-search" class="mr-2" color="primary" />
-        选择115目录
+        <v-icon
+          :icon="dirDialog.provider === 'cd2' ? 'mdi-folder-network' : 'mdi-folder-search'"
+          class="mr-2"
+          color="primary"
+        />
+        {{ dirDialog.provider === "cd2" ? "选择CloudDrive2目录" : "选择115目录" }}
       </v-card-title>
       <v-divider />
       <v-card-text class="py-3">
@@ -308,8 +265,7 @@
             v-for="item in dirDialog.items"
             :key="item.path"
             prepend-icon="mdi-folder"
-            :title="item.name"
-            :subtitle="item.path"
+            :title="item.path"
             @click="selectDir(item)"
           />
           <v-list-item v-if="!dirDialog.loading && !dirDialog.items.length" title="该目录下无子目录" />
@@ -326,7 +282,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from "vue";
+import { reactive, ref, watch } from "vue";
 
 const PLUGIN_ID = "P115OfflineBridge";
 
@@ -348,12 +304,6 @@ const adapterOptions = [
   { title: "CloudDrive2 gRPC", value: "clouddrive2_grpc" },
 ];
 
-const pathModeOptions = [
-  { title: "固定目录", value: "fixed" },
-  { title: "多目录轮询", value: "round_robin" },
-  { title: "多目录随机", value: "random" },
-];
-
 function createDefaultModel() {
   return {
     enabled: false,
@@ -363,8 +313,6 @@ function createDefaultModel() {
     moviepilot_api_token: "",
     request_timeout: 20,
     p115_target_path: "",
-    p115_path_select_mode: "fixed",
-    p115_target_paths: "",
     auto_recognize_enabled: true,
     auto_recognize_share_enabled: true,
     auto_recognize_allow_http_torrent: true,
@@ -381,6 +329,10 @@ const config = reactive(createDefaultModel());
 const showApiToken = ref(false);
 const showCd2Password = ref(false);
 const saveLoading = ref(false);
+const adapterSwitching = ref(false);
+const adapterWatchReady = ref(false);
+const suppressAdapterWatch = ref(false);
+
 const message = reactive({
   text: "",
   type: "info",
@@ -392,18 +344,30 @@ const dirDialog = reactive({
   error: "",
   currentPath: "/",
   items: [],
-  target: "default",
+  provider: "p115",
 });
 
 watch(
   () => props.initialConfig,
   (val) => {
     Object.assign(config, createDefaultModel(), val || {});
+    adapterWatchReady.value = true;
   },
   { immediate: true }
 );
 
-const multiPathItems = computed(() => parsePathLines(config.p115_target_paths));
+watch(
+  () => config.adapter,
+  async (next, prev) => {
+    if (!adapterWatchReady.value || suppressAdapterWatch.value) {
+      return;
+    }
+    if (!prev || next === prev) {
+      return;
+    }
+    await applyAdapterImmediately(next, prev);
+  }
+);
 
 function showMessage(text, type = "info") {
   message.text = text;
@@ -415,40 +379,12 @@ function showMessage(text, type = "info") {
   }, 3500);
 }
 
-function parsePathLines(text) {
-  if (!text) return [];
-  const lines = String(text)
-    .replace(/\r/g, "\n")
-    .replace(/，/g, ",")
-    .replace(/；/g, ";")
-    .replace(/;/g, ",")
-    .split("\n")
-    .flatMap((line) => line.split(","))
-    .map((line) => normalizePath(line))
-    .filter(Boolean);
-  const deduped = [];
-  const seen = new Set();
-  for (const item of lines) {
-    if (!seen.has(item)) {
-      seen.add(item);
-      deduped.push(item);
-    }
-  }
-  return deduped;
-}
-
 function normalizePath(path) {
   let value = String(path || "").trim().replace(/\\/g, "/");
   if (!value) return "";
   if (!value.startsWith("/")) value = `/${value}`;
   if (value.length > 1 && value.endsWith("/")) value = value.slice(0, -1);
   return value || "/";
-}
-
-function removeMultiPath(index) {
-  const items = [...multiPathItems.value];
-  items.splice(index, 1);
-  config.p115_target_paths = items.join("\n");
 }
 
 function toInt(value, fallback) {
@@ -459,6 +395,27 @@ function toInt(value, fallback) {
   return fallback;
 }
 
+async function applyAdapterImmediately(next, prev) {
+  adapterSwitching.value = true;
+  try {
+    const result = await props.api.post(
+      `plugin/${PLUGIN_ID}/set_adapter?adapter=${encodeURIComponent(next)}`,
+      {}
+    );
+    if (!result || result.code !== 0) {
+      throw new Error(result?.msg || "切换失败");
+    }
+    showMessage(`接口对象已即时切换为：${next}`, "success");
+  } catch (error) {
+    showMessage(`切换接口对象失败：${error?.message || "未知错误"}`, "error");
+    suppressAdapterWatch.value = true;
+    config.adapter = prev;
+    suppressAdapterWatch.value = false;
+  } finally {
+    adapterSwitching.value = false;
+  }
+}
+
 async function saveConfig() {
   saveLoading.value = true;
   try {
@@ -467,8 +424,7 @@ async function saveConfig() {
     payload.cd2_port = Math.max(toInt(payload.cd2_port, 19798), 1);
     payload.cd2_check_after_secs = Math.max(toInt(payload.cd2_check_after_secs, 10), 0);
     payload.p115_target_path = normalizePath(payload.p115_target_path);
-    payload.p115_target_paths = parsePathLines(payload.p115_target_paths).join("\n");
-    payload.cd2_target_path = payload.cd2_target_path || "/";
+    payload.cd2_target_path = normalizePath(payload.cd2_target_path) || "/";
     emit("save", payload);
     showMessage("配置已提交保存。", "success");
   } catch (error) {
@@ -478,15 +434,15 @@ async function saveConfig() {
   }
 }
 
-function openDirSelector(target) {
-  dirDialog.target = target;
+function openDirSelector(provider) {
+  dirDialog.provider = provider;
   dirDialog.show = true;
   dirDialog.error = "";
   dirDialog.items = [];
-  if (target === "default" && config.p115_target_path) {
-    dirDialog.currentPath = normalizePath(config.p115_target_path) || "/";
+  if (provider === "cd2") {
+    dirDialog.currentPath = normalizePath(config.cd2_target_path) || "/";
   } else {
-    dirDialog.currentPath = "/";
+    dirDialog.currentPath = normalizePath(config.p115_target_path) || "/";
   }
   loadDirContent();
 }
@@ -514,18 +470,12 @@ function selectDir(item) {
 
 function confirmDirSelection() {
   const selected = normalizePath(dirDialog.currentPath) || "/";
-  if (dirDialog.target === "default") {
-    config.p115_target_path = selected;
-    showMessage(`已回填默认目录: ${selected}`, "success");
+  if (dirDialog.provider === "cd2") {
+    config.cd2_target_path = selected;
+    showMessage(`已回填 CloudDrive2 目录: ${selected}`, "success");
   } else {
-    const items = parsePathLines(config.p115_target_paths);
-    if (items.includes(selected)) {
-      showMessage("多目录列表中已存在该目录。", "warning");
-    } else {
-      items.push(selected);
-      config.p115_target_paths = items.join("\n");
-      showMessage(`已添加目录: ${selected}`, "success");
-    }
+    config.p115_target_path = selected;
+    showMessage(`已回填 115 目录: ${selected}`, "success");
   }
   closeDirDialog();
 }
@@ -536,7 +486,10 @@ async function loadDirContent() {
   dirDialog.items = [];
   try {
     const path = normalizePath(dirDialog.currentPath) || "/";
-    const apiPath = `plugin/${PLUGIN_ID}/browse_dir?path=${encodeURIComponent(path)}&is_local=false`;
+    const apiPath =
+      dirDialog.provider === "cd2"
+        ? `plugin/${PLUGIN_ID}/browse_cd2_dir?path=${encodeURIComponent(path)}`
+        : `plugin/${PLUGIN_ID}/browse_dir?path=${encodeURIComponent(path)}&is_local=false`;
     const result = await props.api.get(apiPath);
     if (!result || result.code !== 0 || !result.data) {
       throw new Error(result?.msg || "目录加载失败");
@@ -545,7 +498,7 @@ async function loadDirContent() {
     dirDialog.items = Array.isArray(result.data.items)
       ? result.data.items
           .filter((item) => item && item.is_dir)
-          .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+          .sort((a, b) => String(a.path || "").localeCompare(String(b.path || "")))
       : [];
   } catch (error) {
     dirDialog.error = error?.message || "目录加载失败";
