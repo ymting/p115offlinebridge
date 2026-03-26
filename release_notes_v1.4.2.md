@@ -1,0 +1,3 @@
+- 修复 CloudDrive2 目录选择依赖报错：兼容 protobuf 5.x/6.x 运行时版本
+- 放宽 protobuf 依赖范围为 `>=5.29.6,<7`，减少与现有 MoviePilot 运行环境冲突
+- 保留现有 CloudDrive2 目录浏览与提交能力，无需手动升级容器内 protobuf
