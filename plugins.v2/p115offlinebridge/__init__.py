@@ -14,6 +14,7 @@ from app.schemas.types import EventType, MessageChannel
 
 from .adapters import (
     AdapterType,
+    BrowseDirResult,
     CloudDriveGrpcAdapter,
     OfflineAddResult,
     P115StrmHelperAdapter,
@@ -30,7 +31,7 @@ class P115OfflineBridge(_PluginBase):
     """
 
     plugin_name = "115离线桥接"
-    plugin_desc = "复用现有 115 能力提交离线任务，支持接口对象切换与系统通知。"
+    plugin_desc = "复用现有 115 能力提交离线任务，支持接口对象切换、系统通知与可视化目录选择。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     plugin_version = VERSION
     plugin_author = "Codex"
@@ -163,342 +164,22 @@ class P115OfflineBridge(_PluginBase):
                 "summary": "查看插件状态",
                 "description": "返回当前启用状态和接口配置摘要",
             },
+            {
+                "path": "/browse_dir",
+                "endpoint": self.browse_dir_api,
+                "methods": ["GET"],
+                "auth": "apikey",
+                "summary": "浏览115目录",
+                "description": "调用 P115StrmHelper 的 browse_dir 接口浏览网盘目录",
+            },
         ]
 
-    def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
-        return [
-            {
-                "component": "VForm",
-                "content": [
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "enabled",
-                                            "label": "启用插件",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "notify",
-                                            "label": "发送系统通知",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSelect",
-                                        "props": {
-                                            "model": "adapter",
-                                            "label": "默认接口对象",
-                                            "items": [
-                                                {
-                                                    "title": "P115StrmHelper API（推荐）",
-                                                    "value": "p115_strmhelper",
-                                                },
-                                                {
-                                                    "title": "CloudDrive2 gRPC",
-                                                    "value": "clouddrive2_grpc",
-                                                },
-                                            ],
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "moviepilot_url",
-                                            "label": "MoviePilot 地址",
-                                            "hint": "用于调用 P115StrmHelper 插件 API",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "moviepilot_api_token",
-                                            "label": "MoviePilot API Token",
-                                            "type": "{{ 'password' }}",
-                                            "hint": "留空时默认使用系统 API Token",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "p115_target_path",
-                                            "label": "P115 默认目标目录",
-                                            "hint": "例如 /电影/待整理，留空则走 P115StrmHelper 默认逻辑",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSelect",
-                                        "props": {
-                                            "model": "p115_path_select_mode",
-                                            "label": "P115 目录选择模式",
-                                            "items": [
-                                                {"title": "固定目录", "value": "fixed"},
-                                                {
-                                                    "title": "多目录轮询",
-                                                    "value": "round_robin",
-                                                },
-                                                {"title": "多目录随机", "value": "random"},
-                                            ],
-                                            "hint": "固定目录使用上方默认目录；轮询/随机使用多目录列表",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "request_timeout",
-                                            "label": "请求超时（秒）",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VTextarea",
-                                        "props": {
-                                            "model": "p115_target_paths",
-                                            "label": "P115 多目录列表",
-                                            "rows": 3,
-                                            "auto-grow": True,
-                                            "hint": "每行一个目录，例如 /电影/目录A",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cd2_host",
-                                            "label": "CloudDrive2 Host",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cd2_port",
-                                            "label": "CloudDrive2 Port",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cd2_username",
-                                            "label": "CloudDrive2 用户名",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cd2_password",
-                                            "label": "CloudDrive2 密码",
-                                            "type": "{{ 'password' }}",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 8},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cd2_target_path",
-                                            "label": "CloudDrive2 默认目标目录",
-                                            "hint": "仅在 CloudDrive2 接口对象下生效",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "cd2_check_after_secs",
-                                            "label": "CD2 检查延迟（秒）",
-                                            "type": "number",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "auto_recognize_enabled",
-                                            "label": "自动识别用户消息",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "auto_recognize_share_enabled",
-                                            "label": "自动识别115分享链接",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "auto_recognize_allow_http_torrent",
-                                            "label": "自动识别 .torrent 链接",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "info",
-                                            "variant": "tonal",
-                                            "density": "compact",
-                                            "text": "命令用法：/p115_offline <磁力或下载链接>。也支持直接发送磁力链接或115分享链接自动识别。",
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                ],
-            }
-        ], {
+    @staticmethod
+    def get_render_mode() -> Tuple[str, Optional[str]]:
+        return "vue", "dist/assets"
+
+    def _default_form_model(self) -> Dict[str, Any]:
+        return {
             "enabled": False,
             "notify": True,
             "adapter": "p115_strmhelper",
@@ -519,28 +200,11 @@ class P115OfflineBridge(_PluginBase):
             "cd2_check_after_secs": 10,
         }
 
+    def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
+        return None, self._default_form_model()
+
     def get_page(self) -> Optional[List[dict]]:
-        return [
-            {
-                "component": "VRow",
-                "content": [
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VAlert",
-                                "props": {
-                                    "type": "info",
-                                    "variant": "tonal",
-                                    "text": "本插件用于桥接 115 离线下载能力，默认调用 P115StrmHelper 的既有接口。",
-                                },
-                            }
-                        ],
-                    }
-                ],
-            }
-        ]
+        return None
 
     def stop_service(self):
         pass
@@ -890,6 +554,49 @@ class P115OfflineBridge(_PluginBase):
                 "cd2_host": self._cd2_host,
                 "cd2_port": self._cd2_port,
                 "cd2_target_path": self._cd2_target_path,
+            },
+        }
+
+    @staticmethod
+    def _normalize_browse_path(path: Optional[str]) -> str:
+        normalized = str(path or "/").strip() or "/"
+        if not normalized.startswith("/"):
+            normalized = "/" + normalized
+        if len(normalized) > 1:
+            normalized = normalized.rstrip("/") or "/"
+        return normalized
+
+    def browse_dir_api(self, path: str = "/", is_local: bool = False) -> Dict[str, Any]:
+        if bool(is_local):
+            return {
+                "code": -1,
+                "msg": "仅支持 115 网盘目录浏览，请使用 is_local=false",
+                "data": {"path": "/", "items": []},
+            }
+
+        normalized_path = self._normalize_browse_path(path)
+        adapter = P115StrmHelperAdapter(
+            moviepilot_url=self._moviepilot_url,
+            api_token=self._moviepilot_api_token,
+            timeout=self._request_timeout,
+        )
+        result: BrowseDirResult = adapter.browse_dir(
+            path=normalized_path,
+            is_local=False,
+        )
+        if not result.success:
+            return {
+                "code": -1,
+                "msg": result.message,
+                "data": {"path": normalized_path, "items": []},
+            }
+
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "path": result.path or normalized_path,
+                "items": [item.to_dict() for item in result.items if item.is_dir],
             },
         }
 

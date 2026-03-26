@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from app.log import logger
 from app.utils.http import RequestUtils
@@ -36,6 +36,34 @@ class ShareAddResult:
         return asdict(self)
 
 
+@dataclass
+class BrowseDirItem:
+    name: str
+    path: str
+    is_dir: bool
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class BrowseDirResult:
+    success: bool
+    adapter: str
+    path: str
+    items: List[BrowseDirItem]
+    message: str
+
+    def to_dict(self) -> dict:
+        return {
+            "success": self.success,
+            "adapter": self.adapter,
+            "path": self.path,
+            "items": [item.to_dict() for item in self.items],
+            "message": self.message,
+        }
+
+
 class P115StrmHelperAdapter:
     """
     通过 MoviePilot 插件 API 调用 P115StrmHelper 现有离线下载能力。
@@ -45,6 +73,18 @@ class P115StrmHelperAdapter:
         self._moviepilot_url = (moviepilot_url or "").rstrip("/")
         self._api_token = api_token or ""
         self._timeout = timeout
+
+    @staticmethod
+    def _load_json_body(response: Any) -> Optional[dict]:
+        body = None
+        try:
+            body = response.json()
+        except Exception:
+            try:
+                body = json.loads(response.text)
+            except Exception:
+                body = None
+        return body if isinstance(body, dict) else None
 
     def add_links(self, links: List[str], target_path: Optional[str] = None) -> OfflineAddResult:
         if not links:
@@ -97,14 +137,7 @@ class P115StrmHelperAdapter:
                     message="调用 P115StrmHelper API 失败：无响应",
                 )
 
-            body = None
-            try:
-                body = response.json()
-            except Exception:
-                try:
-                    body = json.loads(response.text)
-                except Exception:
-                    body = None
+            body = self._load_json_body(response)
 
             if response.status_code >= 400:
                 err_msg = None
@@ -119,7 +152,7 @@ class P115StrmHelperAdapter:
                     message=f"调用失败：{err_msg}",
                 )
 
-            if not isinstance(body, dict):
+            if not body:
                 return OfflineAddResult(
                     success=False,
                     adapter="p115_strmhelper",
@@ -206,14 +239,7 @@ class P115StrmHelperAdapter:
                     fail_messages.append("无响应")
                     continue
 
-                body = None
-                try:
-                    body = response.json()
-                except Exception:
-                    try:
-                        body = json.loads(response.text)
-                    except Exception:
-                        body = None
+                body = self._load_json_body(response)
 
                 if response.status_code >= 400:
                     failed_count += 1
@@ -225,7 +251,7 @@ class P115StrmHelperAdapter:
                         fail_messages.append(str(response.status_code))
                     continue
 
-                if isinstance(body, dict):
+                if body:
                     code = int(body.get("code", 0))
                     if code == 0:
                         success_count += 1
@@ -256,6 +282,129 @@ class P115StrmHelperAdapter:
             failed_count=failed_count,
             message=message,
         )
+
+    def browse_dir(self, path: str = "/", is_local: bool = False) -> BrowseDirResult:
+        normalized_path = (path or "/").strip() or "/"
+        if not normalized_path.startswith("/"):
+            normalized_path = "/" + normalized_path
+        if len(normalized_path) > 1:
+            normalized_path = normalized_path.rstrip("/")
+            if not normalized_path:
+                normalized_path = "/"
+
+        if not self._moviepilot_url:
+            return BrowseDirResult(
+                success=False,
+                adapter="p115_strmhelper",
+                path=normalized_path,
+                items=[],
+                message="MoviePilot 地址未配置",
+            )
+        if not self._api_token:
+            return BrowseDirResult(
+                success=False,
+                adapter="p115_strmhelper",
+                path=normalized_path,
+                items=[],
+                message="MoviePilot API Token 未配置",
+            )
+
+        url = f"{self._moviepilot_url}/api/v1/plugin/P115StrmHelper/browse_dir"
+        try:
+            response = RequestUtils(
+                content_type="application/json",
+                timeout=self._timeout,
+            ).get_res(
+                url=url,
+                params={
+                    "apikey": self._api_token,
+                    "path": normalized_path,
+                    "is_local": str(bool(is_local)).lower(),
+                },
+            )
+            if not response:
+                return BrowseDirResult(
+                    success=False,
+                    adapter="p115_strmhelper",
+                    path=normalized_path,
+                    items=[],
+                    message="调用 P115StrmHelper 浏览目录 API 失败：无响应",
+                )
+
+            body = self._load_json_body(response)
+            if response.status_code >= 400:
+                err_msg = None
+                if body:
+                    err_msg = body.get("msg") or body.get("message")
+                err_msg = err_msg or f"HTTP {response.status_code}"
+                return BrowseDirResult(
+                    success=False,
+                    adapter="p115_strmhelper",
+                    path=normalized_path,
+                    items=[],
+                    message=f"浏览目录失败：{err_msg}",
+                )
+
+            if not body:
+                return BrowseDirResult(
+                    success=False,
+                    adapter="p115_strmhelper",
+                    path=normalized_path,
+                    items=[],
+                    message="浏览目录失败：响应不是有效 JSON",
+                )
+
+            code = int(body.get("code", 0))
+            if code != 0:
+                return BrowseDirResult(
+                    success=False,
+                    adapter="p115_strmhelper",
+                    path=normalized_path,
+                    items=[],
+                    message=str(body.get("msg") or "浏览目录失败"),
+                )
+
+            data = body.get("data")
+            if not isinstance(data, dict):
+                data = {}
+            result_path = str(data.get("path") or normalized_path)
+            raw_items = data.get("items")
+            if not isinstance(raw_items, list):
+                raw_items = []
+
+            items: List[BrowseDirItem] = []
+            for raw_item in raw_items:
+                if not isinstance(raw_item, dict):
+                    continue
+                item_path = str(raw_item.get("path") or "")
+                item_name = str(raw_item.get("name") or "")
+                if not item_path and not item_name:
+                    continue
+                items.append(
+                    BrowseDirItem(
+                        name=item_name or item_path.rstrip("/").split("/")[-1] or "/",
+                        path=item_path or item_name,
+                        is_dir=bool(raw_item.get("is_dir")),
+                    )
+                )
+            items = sorted(items, key=lambda item: item.name)
+
+            return BrowseDirResult(
+                success=True,
+                adapter="p115_strmhelper",
+                path=result_path,
+                items=items,
+                message="ok",
+            )
+        except Exception as err:
+            logger.error("调用 P115StrmHelper 浏览目录 API 异常: %s", err, exc_info=True)
+            return BrowseDirResult(
+                success=False,
+                adapter="p115_strmhelper",
+                path=normalized_path,
+                items=[],
+                message=f"调用异常：{err}",
+            )
 
 
 class CloudDriveGrpcAdapter:

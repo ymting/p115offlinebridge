@@ -6,11 +6,17 @@ MoviePilot 独立插件仓库：`P115OfflineBridge`（115离线桥接）。
 
 ```text
 repo_p115offlinebridge/
+├─ frontend/
+│  └─ p115offlinebridge/
+│     ├─ package.json
+│     ├─ vite.config.js
+│     └─ src/
 ├─ package.v2.json
 └─ plugins.v2/
    └─ p115offlinebridge/
       ├─ __init__.py
       ├─ adapters.py
+      ├─ dist/assets/
       ├─ schemas.py
       ├─ version.py
       ├─ requirements.txt
@@ -23,7 +29,8 @@ repo_p115offlinebridge/
 - 默认通过 `P115StrmHelper` 现有 API 提交离线下载任务
 - 可切换到 `CloudDrive2 gRPC` 直连提交
 - 支持 MoviePilot 系统通知
-- 提供插件 API：`/status`、`/submit`
+- 提供 Vue 配置页（支持“选择115目录”弹窗浏览并自动回填）
+- 提供插件 API：`/status`、`/submit`、`/browse_dir`
 - 提供命令：`/p115_offline <链接>`
 
 ## 开发与发布
@@ -33,6 +40,16 @@ repo_p115offlinebridge/
    - `plugins.v2/p115offlinebridge/version.py`
    - `package.v2.json` 对应版本号与 history
 3. 推送到 GitHub 后，在 MoviePilot 里添加你的仓库地址作为插件仓库。
+
+### 前端构建（Vue配置页）
+
+```bash
+cd frontend/p115offlinebridge
+npm install
+npm run build
+```
+
+构建产物会输出到 `plugins.v2/p115offlinebridge/dist/`。
 
 ## 快速初始化 Git
 
