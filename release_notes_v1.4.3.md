@@ -1,0 +1,4 @@
+- 简化系统对接：`/submit` 单接口自动识别离线下载与 115 分享转存
+- 新增 `text` 原始文本入参，系统可直接透传用户消息内容
+- `/submit` 响应新增 `data.kind` 字段：`offline` / `share`
+- 兼容原有 `links` 与 `link_text` 调用方式，无需改老流程

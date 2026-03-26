@@ -135,8 +135,8 @@ class P115OfflineBridge(_PluginBase):
                 "endpoint": self.submit_api,
                 "methods": ["POST"],
                 "auth": "apikey",
-                "summary": "提交离线任务",
-                "description": "提交离线下载任务并返回执行结果",
+                "summary": "提交任务（自动识别）",
+                "description": "自动识别离线下载或115分享转存并返回执行结果",
             },
             {
                 "path": "/status",
@@ -510,9 +510,45 @@ class P115OfflineBridge(_PluginBase):
         if not self._enabled:
             return {"code": -1, "msg": "插件未启用"}
 
-        links = self._parse_links(links=payload.links, link_text=payload.link_text)
+        raw_text_parts: List[str] = []
+        if payload.links:
+            raw_text_parts.extend([str(item) for item in payload.links if item is not None])
+        if payload.link_text:
+            raw_text_parts.append(str(payload.link_text))
+        if payload.text:
+            raw_text_parts.append(str(payload.text))
+        raw_text = "\n".join([part for part in raw_text_parts if str(part).strip()]).strip()
+
+        # 先尝试按分享链接处理，系统侧可仅传原始文本统一调用本接口。
+        share_urls = self._extract_share_urls(raw_text)
+        if share_urls:
+            share_result = self._submit_share_links(share_urls=share_urls)
+            self._notify_share_submit(result=share_result, force_notify=payload.notify)
+            return {
+                "code": 0 if share_result.success else -1,
+                "msg": share_result.message,
+                "data": {
+                    "kind": "share",
+                    "result": share_result.to_dict(),
+                },
+            }
+
+        links = self._parse_links(links=payload.links, link_text=raw_text)
+        if raw_text:
+            links.extend(self._extract_auto_links(raw_text))
+            # 去重
+            unique_links: List[str] = []
+            seen_links = set()
+            for item in links:
+                token = str(item).strip()
+                if (not token) or token in seen_links:
+                    continue
+                seen_links.add(token)
+                unique_links.append(token)
+            links = unique_links
+
         if not links:
-            return {"code": -1, "msg": "未解析到可用链接"}
+            return {"code": -1, "msg": "未解析到可用链接（支持磁力/.torrent/115分享链接）"}
 
         result = self._submit_links(
             links=links,
@@ -526,7 +562,10 @@ class P115OfflineBridge(_PluginBase):
         return {
             "code": 0 if result.success else -1,
             "msg": result.message,
-            "data": data,
+            "data": {
+                "kind": "offline",
+                "result": data,
+            },
         }
 
     def status_api(self) -> Dict[str, Any]:

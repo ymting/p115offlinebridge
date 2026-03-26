@@ -7,11 +7,12 @@ from pydantic import BaseModel, Field
 
 class OfflineSubmitPayload(BaseModel):
     """
-    提交离线下载任务的 API 请求体。
+    提交任务的 API 请求体（自动识别离线下载 / 分享转存）。
     """
 
     links: Optional[List[str]] = Field(default=None, description="链接数组")
     link_text: Optional[str] = Field(default=None, description="多链接文本（换行/逗号分隔）")
+    text: Optional[str] = Field(default=None, description="原始消息文本（自动识别分享链接/磁力链接）")
     path: Optional[str] = Field(default=None, description="目标目录")
     adapter: Optional[str] = Field(default=None, description="接口对象：p115_strmhelper/clouddrive2_grpc")
     notify: Optional[bool] = Field(default=None, description="是否发送系统通知")
