@@ -41,7 +41,7 @@
           <v-text-field
             v-model="config.moviepilot_url"
             label="MoviePilot 地址"
-            hint="用于调用 P115StrmHelper 插件 API"
+            hint="用于调用 P115StrmHelper 插件 API；若外网地址不可达会自动回退本机地址"
             persistent-hint
             density="comfortable"
             variant="outlined"
@@ -116,40 +116,47 @@
           />
         </v-col>
         <v-col cols="12" md="8">
-          <v-textarea
-            v-model="config.p115_target_paths"
-            label="P115 多目录列表（每行一个）"
-            rows="4"
-            auto-grow
-            density="comfortable"
-            variant="outlined"
-            hint="可点击右侧按钮选择目录并自动追加"
-            persistent-hint
-          >
-            <template #append>
-              <v-btn
-                variant="tonal"
-                color="primary"
-                prepend-icon="mdi-folder-multiple"
-                :loading="dirDialog.loading && dirDialog.target === 'multi'"
-                @click="openDirSelector('multi')"
-              >
-                添加目录
-              </v-btn>
-            </template>
-          </v-textarea>
-          <div class="d-flex flex-wrap ga-2 mt-2">
-            <v-chip
-              v-for="(item, index) in multiPathItems"
-              :key="item"
-              closable
-              size="small"
-              color="primary"
-              variant="tonal"
-              @click:close="removeMultiPath(index)"
+          <div v-if="config.p115_path_select_mode !== 'fixed'">
+            <v-textarea
+              v-model="config.p115_target_paths"
+              label="P115 多目录列表（每行一个）"
+              rows="4"
+              auto-grow
+              density="comfortable"
+              variant="outlined"
+              hint="可点击右侧按钮选择目录并自动追加"
+              persistent-hint
             >
-              {{ item }}
-            </v-chip>
+              <template #append>
+                <v-btn
+                  variant="tonal"
+                  color="primary"
+                  prepend-icon="mdi-folder-multiple"
+                  :loading="dirDialog.loading && dirDialog.target === 'multi'"
+                  @click="openDirSelector('multi')"
+                >
+                  添加目录
+                </v-btn>
+              </template>
+            </v-textarea>
+            <div class="d-flex flex-wrap ga-2 mt-2">
+              <v-chip
+                v-for="(item, index) in multiPathItems"
+                :key="item"
+                closable
+                size="small"
+                color="primary"
+                variant="tonal"
+                @click:close="removeMultiPath(index)"
+              >
+                {{ item }}
+              </v-chip>
+            </div>
+          </div>
+          <div v-else>
+            <v-alert type="info" variant="tonal" density="comfortable">
+              当前为“固定目录”模式：只会使用上方“P115 默认目标目录”。多目录列表可忽略。
+            </v-alert>
           </div>
         </v-col>
       </v-row>
